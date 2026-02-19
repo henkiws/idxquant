@@ -1,104 +1,80 @@
+"""
+Run this ONCE before running main.py:
+    python train_model.py
+"""
+
+import pandas as pd
+
 from data.idx_list import get_idx_stocks
 from data.fetch_stock import get_stock
 from indicators.technical import add_indicators
-import pandas as pd
-
 from ml.train import train
 
 
-print("Starting IDX training...")
+def main():
+    print("="*60)
+    print("  IDXQuantBot — Model Training")
+    print("="*60 + "\n")
 
-stocks = get_idx_stocks()
+    stocks = get_idx_stocks()
+    print(f"Fetching data for {len(stocks)} stocks...\n")
 
-print(f"Total stocks: {len(stocks)}")
+    dfs = []
 
-dfs = []
+    for symbol in stocks:
+        print(f"  {symbol}...", end=" ")
+        try:
+            df = get_stock(symbol)
+            if df is None or df.empty:
+                print("SKIP (no data)")
+                continue
 
-for s in stocks:
+            df = add_indicators(df)
+            if df is None or df.empty:
+                print("SKIP (indicators failed)")
+                continue
 
-    print(f"\nFetching: {s}")
+            print(f"OK  ({len(df)} rows)")
+            dfs.append(df)
 
-    try:
+        except Exception as e:
+            print(f"ERROR ({e})")
 
-        df = get_stock(s)
+    print(f"\nValid dataframes: {len(dfs)}")
 
-        if df is None:
-            print("FAILED: df is None")
-            continue
+    if not dfs:
+        print("❌ No data collected. Cannot train.")
+        return
 
-        if df.empty:
-            print("FAILED: df empty")
-            continue
+    # ── Combine all stock data ────────────────────────────────────────────────
+    combined = pd.concat(dfs, ignore_index=True)
 
-        print(f"Downloaded rows: {len(df)}")
+    # flatten MultiIndex just in case concat reintroduces it
+    if isinstance(combined.columns, pd.MultiIndex):
+        combined.columns = combined.columns.get_level_values(0)
 
-        df = add_indicators(df)
+    # remove duplicate columns
+    combined = combined.loc[:, ~combined.columns.duplicated(keep="first")]
 
-        if df is None or df.empty:
-            print("FAILED: indicators empty")
-            continue
+    # force Close to clean float Series
+    close = combined["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    combined["Close"] = pd.Series(close).astype(float)
 
-        print(f"Indicators rows: {len(df)}")
+    combined = combined.dropna(subset=["Close"])
+    combined = combined[combined["Close"] > 0]
+    combined = combined.reset_index(drop=True)
 
-        dfs.append(df)
+    print(f"\nCombined dataset: {combined.shape[0]:,} rows × {combined.shape[1]} columns")
 
-        print("SUCCESS")
+    # ── Train ─────────────────────────────────────────────────────────────────
+    train(combined)
 
-    except Exception as e:
-
-        print(f"ERROR: {e}")
-
-
-print("\nFinished fetching.")
-
-print(f"Valid dataframes: {len(dfs)}")
-
-
-if len(dfs) == 0:
-
-    print("❌ NO DATA. Cannot train.")
-    exit()
+    print("\n✅ TRAINING COMPLETE")
+    print("Model saved to: models/model.pkl")
+    print("You can now run: python main.py\n")
 
 
-combined = pd.concat(dfs, ignore_index=True)
-
-print(f"Combined rows: {len(combined)}")
-
-# =====================================
-# HEDGE FUND LEVEL COLUMN CLEANING FIX
-# =====================================
-
-# flatten multi-index columns if exist
-if isinstance(combined.columns, pd.MultiIndex):
-    combined.columns = combined.columns.get_level_values(0)
-
-# remove duplicate columns (KEEP FIRST ONLY)
-combined = combined.loc[:, ~combined.columns.duplicated(keep="first")]
-
-# force Close to be Series
-close_col = combined["Close"]
-
-# if still DataFrame, take first column
-if isinstance(close_col, pd.DataFrame):
-    close_col = close_col.iloc[:, 0]
-
-# assign back clean Close
-combined["Close"] = pd.Series(close_col).astype(float)
-
-# remove invalid rows
-combined = combined.dropna(subset=["Close"])
-
-# reset index
-combined = combined.reset_index(drop=True)
-
-# FINAL DEBUG CHECK
-print("\nFINAL CLEAN CHECK:")
-print("Close type:", type(combined["Close"]))
-print("Columns count:", len(combined.columns))
-print("Shape:", combined.shape)
-
-# =====================================
-
-train(combined)
-
-print("✅ TRAINING COMPLETE")
+if __name__ == "__main__":
+    main()
